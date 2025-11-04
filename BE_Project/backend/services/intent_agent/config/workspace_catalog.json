@@ -1,0 +1,50 @@
+[
+  {
+    "id": "sales",
+    "name": "Sales Analytics",
+    "description": "Sales and transaction data, revenue analysis, customer purchases",
+    "sample_sql": "SELECT * FROM sales_transactions LIMIT 5;",
+    "keywords": ["sales", "revenue", "profit", "purchase", "transaction", "customer", "order", "product"],
+    "tables": ["sales_transactions", "products", "customers", "orders"]
+  },
+  {
+    "id": "support",
+    "name": "Customer Support",
+    "description": "Customer feedback, complaints, support tickets, satisfaction surveys",
+    "sample_sql": "SELECT * FROM support_tickets LIMIT 5;",
+    "keywords": ["support", "feedback", "complaint", "ticket", "issue", "help", "customer service", "satisfaction"],
+    "tables": ["support_tickets", "feedback", "complaints", "satisfaction_surveys"]
+  },
+  {
+    "id": "marketing",
+    "name": "Marketing Analytics",
+    "description": "Campaign performance, lead generation, conversion rates, marketing metrics",
+    "sample_sql": "SELECT * FROM marketing_campaigns LIMIT 5;",
+    "keywords": ["marketing", "campaign", "lead", "conversion", "advertisement", "promotion", "email", "social"],
+    "tables": ["marketing_campaigns", "leads", "conversions", "email_campaigns"]
+  },
+  {
+    "id": "hr",
+    "name": "Human Resources",
+    "description": "Employee data, performance reviews, attendance, recruitment",
+    "sample_sql": "SELECT * FROM employees LIMIT 5;",
+    "keywords": ["employee", "hr", "performance", "attendance", "recruitment", "salary", "department", "manager"],
+    "tables": ["employees", "performance_reviews", "attendance", "recruitment"]
+  },
+  {
+    "id": "finance",
+    "name": "Financial Data",
+    "description": "Financial reports, budgets, expenses, accounting data",
+    "sample_sql": "SELECT * FROM financial_reports LIMIT 5;",
+    "keywords": ["finance", "budget", "expense", "accounting", "cost", "revenue", "financial", "money"],
+    "tables": ["financial_reports", "budgets", "expenses", "accounting_ledger"]
+  },
+  {
+    "id": "operations",
+    "name": "Operations",
+    "description": "Operational metrics, inventory, logistics, supply chain",
+    "sample_sql": "SELECT * FROM inventory LIMIT 5;",
+    "keywords": ["operations", "inventory", "logistics", "supply", "warehouse", "shipping", "delivery", "stock"],
+    "tables": ["inventory", "logistics", "supply_chain", "warehouse_data"]
+  }
+]

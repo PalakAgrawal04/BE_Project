@@ -1,0 +1,157 @@
+[
+  {
+    "user_query": "Show me sales in Mumbai for last month",
+    "context": ["sales data for Mumbai", "monthly sales reports"],
+    "intent": {
+      "intent_type": "read",
+      "workspaces": ["sales"],
+      "entities": {
+        "dates": ["last month"],
+        "locations": ["Mumbai"],
+        "quantities": [],
+        "products": [],
+        "organizations": [],
+        "people": [],
+        "custom": {}
+      },
+      "confidence": 0.95,
+      "rationale": "Clear request for sales data with specific location and time period. Single intent to retrieve data.",
+      "query_type": "simple",
+      "time_sensitivity": "historical"
+    }
+  },
+  {
+    "user_query": "Compare complaint volumes between 2024 and 2025",
+    "context": ["complaint analysis", "year over year comparison"],
+    "intent": {
+      "intent_type": "compare",
+      "workspaces": ["support"],
+      "entities": {
+        "dates": ["2024", "2025"],
+        "locations": [],
+        "quantities": [],
+        "products": [],
+        "organizations": [],
+        "people": [],
+        "custom": {}
+      },
+      "confidence": 0.92,
+      "rationale": "Explicit comparison request between two time periods for complaint data. Comparative intent is clear.",
+      "query_type": "simple",
+      "time_sensitivity": "historical"
+    }
+  },
+  {
+    "user_query": "What's the average response time for support tickets in Q3 2024?",
+    "context": ["support ticket metrics", "response time analysis"],
+    "intent": {
+      "intent_type": "analyze",
+      "workspaces": ["support"],
+      "entities": {
+        "dates": ["Q3 2024"],
+        "locations": [],
+        "quantities": ["average"],
+        "products": [],
+        "organizations": [],
+        "people": [],
+        "custom": {}
+      },
+      "confidence": 0.88,
+      "rationale": "Request for analytical metric (average) over specific time period. Analysis intent with aggregation.",
+      "query_type": "simple",
+      "time_sensitivity": "historical"
+    }
+  },
+  {
+    "user_query": "Update the customer status to active for all customers with pending orders",
+    "context": ["customer management", "order status updates"],
+    "intent": {
+      "intent_type": "update",
+      "workspaces": ["sales"],
+      "entities": {
+        "dates": [],
+        "locations": [],
+        "quantities": [],
+        "products": [],
+        "organizations": [],
+        "people": [],
+        "custom": {
+          "status": "active",
+          "condition": "pending orders"
+        }
+      },
+      "confidence": 0.90,
+      "rationale": "Clear update operation to modify customer status based on order condition. Modification intent.",
+      "query_type": "simple",
+      "time_sensitivity": "immediate"
+    }
+  },
+  {
+    "user_query": "Show me the top 10 products by revenue in December 2024 and compare with November",
+    "context": ["product performance", "monthly revenue comparison"],
+    "intent": {
+      "intent_type": "compare",
+      "workspaces": ["sales"],
+      "entities": {
+        "dates": ["December 2024", "November"],
+        "locations": [],
+        "quantities": ["top 10"],
+        "products": [],
+        "organizations": [],
+        "people": [],
+        "custom": {}
+      },
+      "confidence": 0.85,
+      "rationale": "Complex query with both ranking (top 10) and comparison elements. Compare intent with multiple entities.",
+      "query_type": "complex",
+      "time_sensitivity": "historical"
+    }
+  },
+  {
+    "user_query": "Predict sales for next quarter based on current trends",
+    "context": ["sales forecasting", "trend analysis"],
+    "intent": {
+      "intent_type": "predict",
+      "workspaces": ["sales"],
+      "entities": {
+        "dates": ["next quarter"],
+        "locations": [],
+        "quantities": [],
+        "products": [],
+        "organizations": [],
+        "people": [],
+        "custom": {
+          "method": "trend analysis"
+        }
+      },
+      "confidence": 0.87,
+      "rationale": "Explicit prediction request with time period and method specification. Predictive intent.",
+      "query_type": "simple",
+      "time_sensitivity": "future"
+    }
+  },
+  {
+    "user_query": "Summarize employee performance ratings by department for this year",
+    "context": ["employee performance", "departmental analysis"],
+    "intent": {
+      "intent_type": "summarize",
+      "workspaces": ["hr"],
+      "entities": {
+        "dates": ["this year"],
+        "locations": [],
+        "quantities": [],
+        "products": [],
+        "organizations": [],
+        "people": [],
+        "custom": {
+          "group_by": "department",
+          "metric": "performance ratings"
+        }
+      },
+      "confidence": 0.93,
+      "rationale": "Clear summarization request with grouping by department and time period. Aggregation intent.",
+      "query_type": "simple",
+      "time_sensitivity": "historical"
+    }
+  }
+]

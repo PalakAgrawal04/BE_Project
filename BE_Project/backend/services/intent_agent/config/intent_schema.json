@@ -1,0 +1,80 @@
+{
+  "type": "object",
+  "properties": {
+    "intent_type": {
+      "type": "string",
+      "enum": ["read", "compare", "update", "summarize", "analyze", "predict"],
+      "description": "The primary intent of the user query"
+    },
+    "workspaces": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "description": "List of relevant workspace domains"
+    },
+    "entities": {
+      "type": "object",
+      "description": "Extracted entities from the query",
+      "properties": {
+        "dates": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Date-related entities"
+        },
+        "locations": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Location entities (cities, countries, etc.)"
+        },
+        "quantities": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Numeric quantities and measures"
+        },
+        "products": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Product or service names"
+        },
+        "organizations": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Company or organization names"
+        },
+        "people": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Person names"
+        },
+        "custom": {
+          "type": "object",
+          "description": "Custom entity types specific to the domain"
+        }
+      }
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0,
+      "description": "Confidence score for the intent analysis"
+    },
+    "rationale": {
+      "type": "string",
+      "description": "Explanation of the intent analysis reasoning"
+    },
+    "query_type": {
+      "type": "string",
+      "enum": ["simple", "complex", "multi_intent"],
+      "description": "Complexity classification of the query"
+    },
+    "time_sensitivity": {
+      "type": "string",
+      "enum": ["immediate", "near_term", "historical", "future"],
+      "description": "Time sensitivity of the query"
+    }
+  },
+  "required": ["intent_type", "workspaces", "entities", "confidence"],
+  "additionalProperties": false
+}

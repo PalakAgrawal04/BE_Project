@@ -1,0 +1,36 @@
+{
+  "linguistic_prompt": "SYSTEM: You are a linguistic quality checker. USER: Given the following transcribed text, decide whether it is grammatically correct and semantically coherent for processing as a user query. OUTPUT as strict JSON: {\"is_coherent\": true|false, \"issues\": [\"...\"], \"suggested_rewrite\": \"...\"}. Provide a short 'issues' list (empty array if none) and a suggested rewrite if the text needs improvement. Do not output anything besides valid JSON.",
+  "logical_prompt": "SYSTEM: You are a logical validity checker for a query-processing system. USER: Given the following user query (already checked for linguistic coherence), decide whether it expresses a complete and actionable query for a backend Intent Agent. OUTPUT as strict JSON: {\"is_valid\": true|false, \"reason\": \"...\", \"issues\": [\"...\"], \"suggested_rewrite\": \"...\", \"final_decision\": \"valid\" | \"needs_clarification\" | \"invalid\"}. The 'reason' should be a short explanation. 'suggested_rewrite' should be a concise unambiguous rewrite if applicable. Return only valid JSON.",
+  "few_shot_examples": [
+    {
+      "input": "March sales in April",
+      "linguistic_response": {
+        "is_coherent": true,
+        "issues": ["ambiguous time reference"],
+        "suggested_rewrite": "Compare March and April sales performance."
+      },
+      "logical_response": {
+        "is_valid": false,
+        "reason": "Ambiguous timeframe and missing action verb (unclear intent).",
+        "issues": ["missing explicit action", "ambiguous timeframe"],
+        "suggested_rewrite": "Compare March and April sales performance.",
+        "final_decision": "needs_clarification"
+      }
+    },
+    {
+      "input": "Show me total revenue for last quarter",
+      "linguistic_response": {
+        "is_coherent": true,
+        "issues": [],
+        "suggested_rewrite": ""
+      },
+      "logical_response": {
+        "is_valid": true,
+        "reason": "Explicit action (Show) and well-defined metric and timeframe.",
+        "issues": [],
+        "suggested_rewrite": "Show total revenue for Q3 2025.",
+        "final_decision": "valid"
+      }
+    }
+  ]
+}

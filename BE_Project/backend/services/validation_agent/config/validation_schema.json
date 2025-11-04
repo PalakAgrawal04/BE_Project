@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "properties": {
+    "is_coherent": {"type": "boolean"},
+    "is_valid": {"type": "boolean"},
+    "issues": {"type": "array", "items": {"type": "string"}},
+    "suggested_rewrite": {"type": ["string", "null"]},
+    "final_decision": {"type": "string"}
+  },
+  "required": ["is_coherent", "is_valid", "final_decision"]
+}
