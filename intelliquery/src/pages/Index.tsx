@@ -7,6 +7,8 @@ import MetricsStrip from "@/components/MetricsStrip";
 import HelpModal from "@/components/HelpModal";
 import { HelpCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { postIntent } from "@/lib/api";
+import { toast } from "sonner";
 
 export interface QueryResult {
   id: string;
@@ -27,38 +29,33 @@ const Index = () => {
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [isHelpOpen, setIsHelpOpen] = useState(false);
 
-  const handleQuerySubmit = (query: string) => {
-    // Simulate query processing
-    const responseTime = Math.random() * 2000 + 500;
-    
-    setTimeout(() => {
+  const handleQuerySubmit = async (query: string) => {
+    const start = Date.now();
+    try {
+      const resp = await postIntent(query, true);
+
+      const responseTime = Date.now() - start;
+
+      // Map backend response into the UI's QueryResult shape as best-effort
       const result: QueryResult = {
-        id: Date.now().toString(),
+        id: String(Date.now()),
         query,
-        timestamp: new Date(),
-        intent: Math.random() > 0.7 ? "hybrid" : Math.random() > 0.5 ? "structured" : "unstructured",
+        timestamp: new Date(resp.timestamp ? resp.timestamp : Date.now()),
+        intent: (resp.intent_analysis?.type as any) || (resp.metadata?.inferred_intent as any) || "unstructured",
         responseTime,
-        sqlQuery: Math.random() > 0.3 ? "SELECT users.name, orders.total FROM users JOIN orders ON users.id = orders.user_id WHERE orders.date > '2024-01-01'" : undefined,
-        documentSummary: Math.random() > 0.3 ? "Found 5 relevant documents about customer behavior patterns" : undefined,
-        tableData: Math.random() > 0.3 ? [
-          { id: 1, name: "Alice Johnson", total: "$12,450", orders: 23 },
-          { id: 2, name: "Bob Smith", total: "$8,920", orders: 15 },
-          { id: 3, name: "Carol White", total: "$15,670", orders: 31 },
-        ] : undefined,
-        documents: Math.random() > 0.3 ? [
-          { title: "Q4 Customer Analysis", snippet: "Analysis shows increased customer engagement...", source: "reports/2024-q4.pdf" },
-          { title: "Market Trends 2024", snippet: "Key trends indicate a shift towards...", source: "research/trends.docx" },
-        ] : undefined,
-        relationships: Math.random() > 0.5 ? [
-          { from: "Customer", to: "Order", type: "places" },
-          { from: "Order", to: "Product", type: "contains" },
-          { from: "Customer", to: "Support Ticket", type: "creates" },
-        ] : undefined,
+        sqlQuery: resp.intent_analysis?.sql || resp.metadata?.sql_query,
+        documentSummary: resp.intent_analysis?.document_summary || resp.metadata?.document_summary,
+        tableData: resp.metadata?.tableData || undefined,
+        documents: resp.metadata?.documents || undefined,
+        relationships: resp.metadata?.relationships || undefined,
       };
-      
+
       setCurrentResult(result);
-      setQueries(prev => [result, ...prev]);
-    }, responseTime);
+      setQueries((prev) => [result, ...prev]);
+    } catch (err: any) {
+      console.error("Query failed", err);
+      toast.error(err?.message || "Failed to run query");
+    }
   };
 
   return (
