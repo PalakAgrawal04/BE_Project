@@ -8,25 +8,31 @@ Adjust the exact Gemini client call if your google-generativeai version uses dif
 import os
 import json
 import re
-from typing import Dict, Any
+import logging
+from typing import Dict, Any, Optional
 from dotenv import load_dotenv
+from .logging_config import setup_logging
+
+# Set up logging
+setup_logging()
 
 load_dotenv()
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
 # Import the client. Depending on your installed package version the import path varies.
-# Example: 'import google.generativeai as genai'
 try:
     import google.generativeai as genai  # type: ignore
 except Exception:
     genai = None  # We'll guard usage below
 
-PROMPTS_PATH = os.getenv("VALIDATION_PROMPTS_PATH",
-                         "backend/services/validation_agent/config/validation_prompts.json")
+PROMPTS_PATH = os.getenv(
+    "VALIDATION_PROMPTS_PATH",
+    "backend/services/validation_agent/config/validation_prompts.json"
+)
 
 
 def _load_prompts() -> Dict[str, Any]:
-    import json
     with open(PROMPTS_PATH, "r", encoding="utf-8") as f:
         return json.load(f)
 
@@ -34,93 +40,208 @@ def _load_prompts() -> Dict[str, Any]:
 def _parse_json_from_text(text: str) -> Dict[str, Any]:
     """
     Extract the first JSON object from the model text output robustly.
-    Removes code fences and finds {...}.
     """
-    # remove markdown/code fences
-    text = re.sub(r"```[\s\S]*?```", "", text)
-    # find first curly-brace JSON
-    first_brace = text.find("{")
-    last_brace = text.rfind("}")
-    if first_brace == -1 or last_brace == -1:
-        raise ValueError("No JSON object found in model response.")
-    json_text = text[first_brace:last_brace+1]
-    return json.loads(json_text)
+    logger = logging.getLogger(__name__)
+    logger.info("Attempting to parse model response as JSON")
+    logger.debug(f"Raw text: {text}")
+
+    text = text.strip()
+
+    # Try to parse entire text first
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        logger.debug(f"Failed to parse entire text as JSON: {e}")
+
+    # Try to extract JSON from code blocks
+    code_patterns = [
+        r"```json\s*([\s\S]*?)\s*```",
+        r"```\s*([\s\S]*?)\s*```",
+        r"`([\s\S]*?)`"
+    ]
+
+    for pattern in code_patterns:
+        matches = re.findall(pattern, text)
+        for match in matches:
+            try:
+                candidate = match.strip()
+                logger.debug(f"Trying JSON from code block: {candidate}")
+                return json.loads(candidate)
+            except json.JSONDecodeError as e:
+                logger.debug(f"Failed to parse code block as JSON: {e}")
+
+    # Fallback: parse plain JSON objects within text
+    text_no_code = re.sub(r"```[\s\S]*?```", "", text)
+    text_no_code = re.sub(r"`[^`]*`", "", text_no_code)
+
+    depth = 0
+    start = -1
+    json_candidates = []
+
+    for i, char in enumerate(text_no_code):
+        if char == '{':
+            if depth == 0:
+                start = i
+            depth += 1
+        elif char == '}':
+            depth -= 1
+            if depth == 0 and start != -1:
+                json_candidates.append(text_no_code[start:i + 1])
+
+    for candidate in json_candidates:
+        try:
+            logger.debug(f"Trying JSON candidate: {candidate}")
+            return json.loads(candidate)
+        except json.JSONDecodeError as e:
+            logger.debug(f"Failed candidate: {e}")
+
+    logger.error(f"No valid JSON found in response: {text}")
+    raise ValueError("No JSON object found in model response.")
 
 
-def _gemini_generate(prompt: str, model: str = "gemini-1.5-flash", temperature: float = 0.0) -> str:
+def _gemini_generate(
+    prompt: str,
+    model: str = "models/gemini-2.5-flash",
+    temperature: float = 0.0,
+    max_output_tokens: int = 1024,
+    top_p: float = 0.8,
+    top_k: int = 40
+) -> str:
     """
-    Call the Gemini API. Adjust call to your client version if needed.
-    This function returns the raw textual output.
+    Call the Gemini API using google-generativeai >= 0.7 style.
+    Returns the raw text output.
     """
+    logger = logging.getLogger(__name__)
+    logger.debug(f"Starting Gemini generation with model: {model}")
+
     if genai is None:
         raise RuntimeError("google.generativeai package not installed or failed to import.")
+    if not GEMINI_API_KEY:
+        raise RuntimeError("Missing GEMINI_API_KEY environment variable.")
 
-    # Configure once
     genai.configure(api_key=GEMINI_API_KEY)
 
-    # Example call: Some versions use genai.generate_text, some use genai.models.generate
-    # Try both patterns
-    try:
-        # Preferred if available
-        response = genai.generate_text(model=model, prompt=prompt, temperature=temperature)
-        if hasattr(response, "text"):
-            return response.text
-        # If the return is raw string:
-        return str(response)
-    except Exception:
-        pass
+    safety_settings = {
+        "HARASSMENT": "block_none",
+        "HATE_SPEECH": "block_none",
+        "SEXUALLY_EXPLICIT": "block_none",
+        # "DANGEROUS_CONTENT": "block_none"
+    }
 
     try:
-        # Alternative API surface (older/newer versions differ)
         model_obj = genai.GenerativeModel(model)
-        resp = model_obj.generate_content(prompt)  # returns an object; adapt as needed
-        # Try to fetch a textual result
-        if hasattr(resp, "candidates"):
-            # find first candidate text
-            return resp.candidates[0].content[0].text
-        # Otherwise fallback to stringify
-        return str(resp)
+        response = model_obj.generate_content(
+            contents=prompt,
+            generation_config={
+                "temperature": temperature,
+                "max_output_tokens": max_output_tokens,
+                "top_p": top_p,
+                "top_k": top_k
+            },
+            safety_settings=safety_settings
+        )
+
+        if hasattr(response, 'prompt_feedback') and getattr(response.prompt_feedback, 'block_reason', None):
+            raise RuntimeError(f"Content blocked: {response.prompt_feedback.block_reason}")
+
+        if not response.candidates:
+            raise RuntimeError("No candidates in response")
+
+        candidate = response.candidates[0]
+        if hasattr(candidate, 'content') and candidate.content and candidate.content.parts:
+            text = candidate.content.parts[0].text
+        else:
+            raise RuntimeError("No valid content in response")
+
+        logger.debug(f"Generated text: {text}")
+        return text.strip()
+
     except Exception as e:
+        logger.error(f"Gemini generation failed: {e}", exc_info=True)
         raise RuntimeError(f"Gemini call failed: {e}")
 
 
 def check_linguistic_quality(text: str) -> Dict[str, Any]:
     """
     Return a dict containing is_coherent, issues, suggested_rewrite.
-    Uses the linguistic prompt and a deterministic Gemini call (temperature=0).
+    Matches LinguisticValidation Pydantic model.
     """
-    prompts = _load_prompts()
-    prompt_template = prompts["linguistic_prompt"]
-    # Build prompt with examples appended to help grounding
-    # Append a small few-shot with input to reduce hallucination
-    examples = prompts.get("few_shot_examples", [])
-    example_block = ""
-    for ex in examples[:2]:
-        example_block += f"\n\nEXAMPLE INPUT: \"{ex['input']}\"\nEXPECTED: {json.dumps(ex['linguistic_response'])}"
-    full_prompt = f"{prompt_template}\n\nINPUT: \"{text}\"{example_block}\n\nReturn JSON only."
+    prompt = f"""INSTRUCTIONS: Return ONLY a JSON object. No other text.
 
-    raw = _gemini_generate(full_prompt, model="gemini-1.5-flash", temperature=0.0)
-    parsed = _parse_json_from_text(raw)
-    return parsed
+INPUT: {json.dumps(text)}
+
+JSON_SCHEMA: {{
+    "is_coherent": boolean,  // Is the query well-formed and clear?
+    "issues": string[],      // List of any linguistic issues found
+    "suggested_rewrite": string | null  // Improved version if issues found
+}}
+
+EXAMPLE: {{
+    "is_coherent": true,
+    "issues": [],
+    "suggested_rewrite": null
+}}
+
+OUTPUT_FORMAT: Strict JSON only. No markdown. No explanations."""
+
+    raw = _gemini_generate(prompt, temperature=0.0)
+    return _parse_json_from_text(raw)
 
 
-def check_logical_validity(text: str, additional_context: Dict[str, Any] = None) -> Dict[str, Any]:
+def check_logical_validity(text: str, additional_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Return a dict containing is_valid, reason, issues, suggested_rewrite, final_decision.
-    additional_context can include workspace_catalog or retrieved examples to improve accuracy.
+    Matches LogicalValidation Pydantic model.
     """
-    prompts = _load_prompts()
-    prompt_template = prompts["logical_prompt"]
-    examples = prompts.get("few_shot_examples", [])
-    example_block = ""
-    for ex in examples[:2]:
-        example_block += f"\n\nEXAMPLE INPUT: \"{ex['input']}\"\nEXPECTED: {json.dumps(ex['logical_response'])}"
-    context_block = ""
+    context_section = ""
     if additional_context:
-        context_block = "\n\nCONTEXT:\n" + json.dumps(additional_context)
+        context_section = f"\nCONTEXT: {json.dumps(additional_context)}"
 
-    full_prompt = f"{prompt_template}\n\nINPUT: \"{text}\"{context_block}{example_block}\n\nReturn JSON only."
+    prompt = f"""INSTRUCTIONS: Return ONLY a JSON object. No other text.
 
-    raw = _gemini_generate(full_prompt, model="gemini-1.5-pro", temperature=0.0)
-    parsed = _parse_json_from_text(raw)
-    return parsed
+INPUT: {json.dumps(text)}{context_section}
+
+JSON_SCHEMA: {{
+    "is_valid": boolean,  // Is the query valid?
+    "reason": string | null,  // Why valid/invalid?
+    "issues": string[],  // List of problems found
+    "suggested_rewrite": string | null,  // Fixed version if needed
+    "final_decision": string  // One of: 'valid', 'needs_clarification', 'invalid'
+}}
+
+EXAMPLE: {{
+    "is_valid": true,
+    "reason": "Query is well-formed and complete",
+    "issues": [],
+    "suggested_rewrite": null,
+    "final_decision": "valid"
+}}
+
+OUTPUT_FORMAT: Strict JSON only. No markdown. No explanations."""
+
+    raw = _gemini_generate(prompt, temperature=0.0)
+    return _parse_json_from_text(raw)
+
+
+def list_available_models():
+    """
+    List all available Gemini models and their supported methods.
+    """
+    if genai is None:
+        raise RuntimeError("google.generativeai package not installed or failed to import.")
+    if not GEMINI_API_KEY:
+        raise RuntimeError("Missing GEMINI_API_KEY environment variable.")
+
+    genai.configure(api_key=GEMINI_API_KEY)
+
+    try:
+        models = genai.list_models()
+        for model in models:
+            print(f"Model: {model.name}")
+            print(f"Display Name: {model.display_name}")
+            print(f"Description: {model.description}")
+            print(f"Generation Methods: {', '.join(model.supported_generation_methods)}")
+            print("-" * 80)
+        return models
+    except Exception as e:
+        raise RuntimeError(f"Failed to list models: {e}")

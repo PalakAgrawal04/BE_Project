@@ -100,6 +100,20 @@ class QueryExecutor:
             # Get intent and generated SQL
             with self.metrics.measure_phase('intent_extraction'):
                 intent_result = self.intent_agent.run_intent_agent(natural_query)
+
+            # Handle validation results first
+            if not intent_result.get('is_valid', True):
+                return QueryResult(
+                    success=False,
+                    data={
+                        'validation': intent_result.get('validation', {}),
+                        'suggested_rewrite': intent_result.get('suggested_rewrite'),
+                        'issues': intent_result.get('issues', [])
+                    },
+                    error="Query validation failed",
+                    query_type='invalid',
+                    timestamp=datetime.now().isoformat()
+                )
                 
             generated_sql = intent_result.get('generated_sql')
             if not generated_sql:

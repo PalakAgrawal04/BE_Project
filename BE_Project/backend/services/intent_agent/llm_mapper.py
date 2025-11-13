@@ -8,7 +8,7 @@ from text and retrieved context, providing intelligent intent mapping.
 import os
 import json
 import logging
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Optional
 from pathlib import Path
 
 try:
@@ -29,7 +29,7 @@ class LLMMapper:
     
     def __init__(self, 
                  api_key: Optional[str] = None,
-                 model_name: str = "gemini-1.5-pro",
+                 model_name: str = "gemini-2.5-flash",
                  temperature: float = 0.0,
                  system_prompt_path: Optional[str] = None,
                  few_shot_examples_path: Optional[str] = None):
@@ -108,13 +108,40 @@ class LLMMapper:
     
     def _get_default_system_prompt(self) -> str:
         """Get default system prompt if file loading fails."""
-        return """You are the Intent Agent for IntelliQuery.
-Given a user query, your goal is to extract:
-1. Intent type (read, compare, update, summarize, analyze, predict)
-2. Workspaces/domains relevant to the query
-3. Entities (time, location, quantity, etc.)
-4. Confidence score (0–1)
-Return output in strict JSON per schema."""
+        return (
+            "You are the Intent Agent for IntelliQuery.\n"
+            "Given a user query, your goal is to extract structured intent and, when appropriate, generate a safe SQL query.\n"
+            "\n"
+            "Requirements:\n"
+            "1. Identify intent_type: one of (read, compare, update, summarize, analyze, predict)\n"
+            "2. Identify relevant workspaces/domains from the catalog\n"
+            "3. Extract entities (dates, locations, quantities, products, organizations, people, custom)\n"
+            "4. Provide a confidence score (0.0-1.0) and rationale\n"
+            "5. When intent_type implies data retrieval (read, summarize, compare, analyze), provide a safe, read-only SQL statement in the `generated_sql` field. If you cannot safely produce SQL, set `generated_sql` to null and include a suggested_rewrite in the rationale.\n"
+            "\n"
+            "Output JSON schema (required):\n"
+            "{\n"
+            "  \"intent_type\": \"string\",\n"
+            "  \"workspaces\": [\"array of workspace IDs\"],\n"
+            "  \"entities\": {\n"
+            "    \"dates\": [], \"locations\": [], \"quantities\": [],\n"
+            "    \"products\": [], \"organizations\": [], \"people\": [], \"custom\": {}\n"
+            "  },\n"
+            "  \"confidence\": 0.95,\n"
+            "  \"rationale\": \"text explaining decisions and any assumptions\",\n"
+            "  \"query_type\": \"simple|complex|multi_intent\",\n"
+            "  \"time_sensitivity\": \"immediate|near_term|historical|future\",\n"
+            "  \"generated_sql\": \"string|null - a safe SELECT statement when appropriate\"\n"
+            "}\n"
+            "\n"
+            "SQL safety rules:\n"
+            "- Only return read-only SELECT statements for retrieval intents.\n"
+            "- Do NOT generate INSERT/UPDATE/DELETE/DROP/ALTER/TRUNCATE statements.\n"
+            "- Prefer using workspace sample table names and add LIMIT 100 for broad queries.\n"
+            "- If filters are present (dates, locations), apply them in WHERE clauses.\n"
+            "\n"
+            "If you must fall back, return null for `generated_sql` and provide a clear suggested_rewrite."
+        )
     
     def map_intent_with_llm(self, user_text: str, context: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -142,6 +169,14 @@ Return output in strict JSON per schema."""
             # Parse and validate response
             intent_data = self._parse_response(response)
             
+            # If generated_sql is still missing, try a follow-up LLM call to generate SQL
+            if not intent_data.get('generated_sql') and intent_data.get('intent_type') in ['read', 'summarize', 'compare', 'analyze']:
+                self.logger.info("generated_sql missing; attempting SQL generation follow-up")
+                sql = self._generate_sql_follow_up(user_text, intent_data)
+                if sql:
+                    intent_data['generated_sql'] = sql
+                    self.logger.info(f"Generated SQL via follow-up: {sql}")
+            
             self.logger.info(f"LLM mapping completed successfully")
             return intent_data
             
@@ -149,6 +184,76 @@ Return output in strict JSON per schema."""
             self.logger.error(f"LLM mapping failed: {str(e)}")
             # Return fallback intent data
             return self._create_fallback_intent(user_text, context)
+    
+    def _generate_sql_follow_up(self, user_text: str, intent_data: Dict[str, Any]) -> Optional[str]:
+        """
+        Generate SQL via a follow-up LLM call if the first response didn't include it.
+        
+        Args:
+            user_text (str): Original user query
+            intent_data (Dict): Partial intent data from first LLM call
+            
+        Returns:
+            Optional[str]: Generated SQL or None
+        """
+        try:
+            workspace = intent_data.get('workspaces', ['sales'])[0] if intent_data.get('workspaces') else 'sales'
+            intent_type = intent_data.get('intent_type', 'read')
+            entities = intent_data.get('entities', {})
+            
+            # Map workspace to table
+            table_map = {
+                'sales': 'sales_transactions',
+                'support': 'support_tickets',
+                'marketing': 'campaigns',
+                'hr': 'employees',
+                'finance': 'expenses',
+                'operations': 'inventory'
+            }
+            table_name = table_map.get(workspace, f"{workspace}_data")
+            
+            # Build a focused SQL generation prompt
+            sql_prompt = f"""Given this user query and extracted intent, generate a safe SQL SELECT statement.
+
+User Query: {user_text}
+Intent Type: {intent_type}
+Workspace: {workspace}
+Table to query: {table_name}
+Extracted Entities:
+  - Dates: {entities.get('dates', [])}
+  - Locations: {entities.get('locations', [])}
+  - Products: {entities.get('products', [])}
+
+IMPORTANT: Return ONLY the SQL statement, nothing else. No JSON, no explanation.
+Rules:
+- Use SELECT only (read-only)
+- Add WHERE clauses for any extracted entities (dates, locations, products)
+- Always add LIMIT 100
+- Use table name: {table_name}
+- For dates like "April 2025", use: WHERE MONTH(date) = 4 AND YEAR(date) = 2025
+- For locations, use: WHERE location LIKE '%location%'
+
+Return ONLY the SQL query:"""
+            
+            response = self._generate_response(sql_prompt)
+            
+            # Extract SQL from response (it should be mostly clean)
+            sql = response.strip()
+            
+            # Clean up if wrapped in code blocks
+            if '```' in sql:
+                sql = sql.split('```')[1].replace('sql', '').strip()
+            
+            # Validate it looks like a SELECT
+            if sql.upper().startswith('SELECT'):
+                return sql
+            else:
+                self.logger.warning(f"Follow-up SQL generation returned non-SELECT: {sql}")
+                return None
+                
+        except Exception as e:
+            self.logger.warning(f"SQL follow-up generation failed: {e}")
+            return None
     
     def _build_prompt(self, user_text: str, context: Dict[str, Any]) -> str:
         """
@@ -253,12 +358,17 @@ Return output in strict JSON per schema."""
                 intent_data = json.loads(json_str)
                 
                 # Validate required fields
-                required_fields = ['intent_type', 'workspaces', 'entities', 'confidence']
+                required_fields = ['intent_type', 'workspaces', 'entities', 'confidence', 'generated_sql']
                 for field in required_fields:
                     if field not in intent_data:
                         self.logger.warning(f"Missing required field: {field}")
                         intent_data[field] = self._get_default_value(field)
-                
+
+                # Ensure generated_sql is either a string or None
+                if intent_data.get('generated_sql') is not None and not isinstance(intent_data.get('generated_sql'), str):
+                    self.logger.warning('generated_sql exists but is not a string; setting to null')
+                    intent_data['generated_sql'] = None
+
                 return intent_data
             else:
                 raise ValueError("No JSON found in response")
@@ -279,7 +389,8 @@ Return output in strict JSON per schema."""
             'confidence': 0.5,
             'rationale': 'Generated with fallback values',
             'query_type': 'simple',
-            'time_sensitivity': 'historical'
+            'time_sensitivity': 'historical',
+            'generated_sql': None
         }
         return defaults.get(field, None)
     

@@ -26,7 +26,7 @@ def get_mysql_pool() -> MySQLConnectionPool:
             'database': os.getenv('MYSQL_DATABASE', 'intelliquery'),
             # Read-only user settings
             'allow_local_infile': False,
-            'sql_mode': 'NO_ENGINE_SUBSTITUTION,NO_AUTO_CREATE_USER'
+            'sql_mode': 'NO_ENGINE_SUBSTITUTION'
         }
         
         _mysql_pool = MySQLConnectionPool(**pool_config)

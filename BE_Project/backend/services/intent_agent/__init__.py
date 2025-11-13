@@ -12,7 +12,7 @@ This module provides comprehensive intent understanding capabilities including:
 Main entry point: run_intent_agent()
 """
 
-from .agent_orchestrator import run_intent_agent
+from .agent_orchestrator import run_intent_agent, IntentAgentOrchestrator
 
 __version__ = "1.0.0"
-__all__ = ["run_intent_agent"]
+__all__ = ["run_intent_agent", "IntentAgentOrchestrator"]

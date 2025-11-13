@@ -20,9 +20,9 @@ from werkzeug.middleware.dispatcher import DispatcherMiddleware
 from services.intent_agent.agent_orchestrator import IntentAgentOrchestrator
 from services.validation_agent.validator import run_validation_agent
 from services.database import MySQLClient, VectorClient
-from services.query_executor import QueryExecutor
-from services.metrics import MetricsCollector
-from services.voice import VoiceProcessor
+from services.query_executor.executor import QueryExecutor
+from services.metrics.collector import MetricsCollector
+from services.voice.processor import VoiceProcessor
 
 # Load environment variables
 load_dotenv()
@@ -96,9 +96,8 @@ def setup_services():
         logger.error(f"Service initialization failed: {str(e)}")
         raise
 
-@app.before_first_request
-def before_first_request():
-    """Initialize services before first request."""
+# Initialize services at startup
+with app.app_context():
     setup_services()
 
 
@@ -115,8 +114,10 @@ def process_query():
     try:
         if not request.is_json:
             return jsonify({'error': 'Content-Type must be application/json'}), 400
-
+        logging.info(request)
         data = request.get_json()
+        logging.info(f'dataaaaaaaaaaa: {data}')
+        print(data)
         query = data.get('query', '').strip()
         include_similar = data.get('include_similar_documents', True)
 
@@ -127,11 +128,25 @@ def process_query():
 
         # Run validation first
         validation_result = run_validation_agent(query)
-        if not validation_result.get("is_valid", True):
+        logging.info(f'just Testing : {validation_result}')
+        
+        # Return validation results if either linguistic or logical check fails
+        if not validation_result.get("is_coherent", True) or not validation_result.get("is_valid", True):
+            error_msg = validation_result.get("issues", [])[0] if validation_result.get("issues") else "Invalid query"
             return jsonify({
                 "success": False,
                 "status": "invalid_query",
-                "validation": validation_result,
+                "error": error_msg,
+                "message": error_msg,  # For backward compatibility
+                "data": None,
+                "validation": {
+                    "is_coherent": validation_result.get("is_coherent", False),
+                    "is_valid": validation_result.get("is_valid", False),
+                    "issues": validation_result.get("issues", []),
+                    "suggested_rewrite": validation_result.get("suggested_rewrite"),
+                    "final_decision": validation_result.get("final_decision", "invalid")
+                },
+                "suggested_rewrite": validation_result.get("suggested_rewrite"),
                 "timestamp": datetime.now().isoformat()
             }), 400
 
@@ -140,6 +155,7 @@ def process_query():
             query,
             include_similar_docs=include_similar
         )
+        logging.info(f'Result: {result}')
 
         # Track request metrics
         REQUEST_COUNT.labels(
@@ -148,13 +164,51 @@ def process_query():
             status=200 if result.success else 400
         ).inc()
 
+        # Successful response
+        if result.success:
+            return jsonify({
+                "success": True,
+                "data": result.data,
+                "execution_time": result.execution_time,
+                "query_type": result.query_type,
+                "timestamp": result.timestamp
+            }), 200
+
+        # Handle validation-style failures consistently (including missing SQL)
+        if result.query_type == 'invalid':
+            validation_info = {}
+            suggested_rewrite = None
+            issues = []
+            if isinstance(result.data, dict):
+                validation_info = result.data.get('validation', {}) or {}
+                suggested_rewrite = result.data.get('suggested_rewrite')
+                issues = result.data.get('issues', []) or issues
+
+            # If no explicit issues provided, add a generic one from error
+            if not issues and result.error:
+                issues = [result.error]
+
+            return jsonify({
+                "success": False,
+                "status": "invalid_query",
+                "error": result.error or "Invalid query",
+                "message": result.error or "Invalid query",
+                "data": None,
+                "validation": validation_info,
+                "suggested_rewrite": suggested_rewrite,
+                "issues": issues,
+                "timestamp": result.timestamp or datetime.now().isoformat()
+            }), 400
+
+        # Generic failure response with error details
         return jsonify({
-            "success": result.success,
+            "success": False,
+            "error": result.error or "Query execution failed",
             "data": result.data,
             "execution_time": result.execution_time,
             "query_type": result.query_type,
-            "timestamp": result.timestamp
-        }), 200 if result.success else 400
+            "timestamp": result.timestamp or datetime.now().isoformat()
+        }), 400
 
     except Exception as e:
         logger.exception("Query processing failed")

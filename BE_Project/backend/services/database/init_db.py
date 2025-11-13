@@ -27,8 +27,8 @@ def init_database(sql_path: Optional[str] = None) -> bool:
         # Connect with admin privileges
         conn = connect(
             host=os.getenv('MYSQL_HOST', 'localhost'),
-            user=os.getenv('MYSQL_ADMIN_USER', 'root'),
-            password=os.getenv('MYSQL_ADMIN_PASSWORD', '')
+            user=os.getenv('MYSQL_USER', 'root'),
+            password=os.getenv('MYSQL_PASSWORD', '')
         )
         
         cursor = conn.cursor()

@@ -7,7 +7,7 @@ import MetricsStrip from "@/components/MetricsStrip";
 import HelpModal from "@/components/HelpModal";
 import { HelpCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { postIntent } from "@/lib/api";
+import { postQuery, QueryResponse } from "@/lib/api";
 import { toast } from "sonner";
 
 export interface QueryResult {
@@ -29,36 +29,67 @@ const Index = () => {
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [isHelpOpen, setIsHelpOpen] = useState(false);
 
-  const handleQuerySubmit = async (query: string) => {
+    const handleQuerySubmit = async (query: string) => {
     const start = Date.now();
     try {
-      const resp = await postIntent(query, true);
+      const resp = await postQuery(query, true);
+      
+      // Handle validation errors (defensive: backend may return unexpected shape)
+      if (!resp.success) {
+        const validation = resp.validation || null;
+        const issuesArray = Array.isArray(validation?.issues)
+          ? validation!.issues
+          : Array.isArray(resp.issues)
+          ? resp.issues
+          : [];
+
+        if (validation) {
+          if (validation.suggested_rewrite) {
+            const msg = issuesArray.length > 0
+              ? `Query needs revision: ${issuesArray.join('. ')}\nSuggested: "${validation.suggested_rewrite}"`
+              : `Suggested rewrite: "${validation.suggested_rewrite}"`;
+            toast.error(msg);
+            return;
+          }
+
+          const msg = issuesArray.length > 0
+            ? `Invalid query: ${issuesArray.join('. ')}`
+            : resp.error || resp.status || 'Invalid query';
+          toast.error(msg);
+          return;
+        }
+
+        // If we get here, resp.success is false but there's no validation object
+        toast.error(resp.error || resp.status || 'Request failed');
+        return;
+      }
 
       const responseTime = Date.now() - start;
-
-      // Map backend response into the UI's QueryResult shape as best-effort
+      
+      // Map backend response into the UI's QueryResult shape
       const result: QueryResult = {
         id: String(Date.now()),
         query,
-        timestamp: new Date(resp.timestamp ? resp.timestamp : Date.now()),
-        intent: (resp.intent_analysis?.type as any) || (resp.metadata?.inferred_intent as any) || "unstructured",
+        timestamp: new Date(resp.timestamp || Date.now()),
+        intent: resp.data?.intent_analysis?.type || "structured",
         responseTime,
-        sqlQuery: resp.intent_analysis?.sql || resp.metadata?.sql_query,
-        documentSummary: resp.intent_analysis?.document_summary || resp.metadata?.document_summary,
-        tableData: resp.metadata?.tableData || undefined,
-        documents: resp.metadata?.documents || undefined,
-        relationships: resp.metadata?.relationships || undefined,
+        sqlQuery: resp.data?.generated_sql,
+        documentSummary: resp.data?.similar_documents?.[0]?.metadata?.content,
+        tableData: resp.data?.sql_results || [],
+        documents: resp.data?.similar_documents || [],
+        relationships: resp.data?.intent_analysis?.relationships || [],
       };
 
       setCurrentResult(result);
       setQueries((prev) => [result, ...prev]);
     } catch (err: any) {
       console.error("Query failed", err);
-      toast.error(err?.message || "Failed to run query");
+      const errorMsg = err.body?.validation?.suggested_rewrite
+        ? `Query needs revision: ${err.body?.validation?.issues?.join(". ")}\nSuggested: "${err.body?.validation?.suggested_rewrite}"`
+        : err?.message || "Failed to run query";
+      toast.error(errorMsg);
     }
-  };
-
-  return (
+  };  return (
     <div className="min-h-screen bg-background flex">
       {/* Main Content */}
       <div className="flex-1 flex flex-col">

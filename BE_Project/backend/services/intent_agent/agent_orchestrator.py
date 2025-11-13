@@ -240,11 +240,28 @@ class IntentAgentOrchestrator:
         }
     
     def _llm_mapping(self, processed_query: str, context: Dict[str, Any]) -> Dict[str, Any]:
-        """Use LLM for intent mapping."""
+        """Use LLM for intent mapping. Attempt lazy LLM init if not available."""
         try:
-            intent_data = self.llm_mapper.map_intent_with_llm(processed_query, context)
-            self.logger.info("LLM mapping completed successfully")
-            return intent_data
+            # Lazy initialize the LLM mapper if an API key is present at runtime
+            if not self.llm_available:
+                try:
+                    api_key = os.getenv("GEMINI_API_KEY")
+                    if api_key:
+                        self.llm_mapper = LLMMapper(api_key=api_key)
+                        self.llm_available = True
+                        self.logger.info("LLM mapper lazily initialized from environment variable")
+                except Exception as e:
+                    # Keep going; we will fall back to rule-based mapping
+                    self.logger.warning(f"Lazy LLM initialization failed: {e}")
+
+            if self.llm_available and self.llm_mapper:
+                intent_data = self.llm_mapper.map_intent_with_llm(processed_query, context)
+                self.logger.info("LLM mapping completed successfully")
+                return intent_data
+            else:
+                self.logger.info("LLM not available, using rule-based mapping")
+                return self._rule_based_mapping(processed_query, context)
+
         except Exception as e:
             self.logger.warning(f"LLM mapping failed: {str(e)}, falling back to rule-based mapping")
             return self._rule_based_mapping(processed_query, context)
@@ -295,9 +312,15 @@ class IntentAgentOrchestrator:
                           start_time: datetime) -> Dict[str, Any]:
         """Add metadata and finalize the response."""
         processing_time = (datetime.now() - start_time).total_seconds()
-        
+        # Include top-level keys expected by downstream components (QueryExecutor)
         response = {
             'intent_analysis': validated_intent,
+            # Generated SQL and embedding may be populated by LLM mapper in future
+            'generated_sql': validated_intent.get('generated_sql') if isinstance(validated_intent, dict) else None,
+            'query_embedding': validated_intent.get('query_embedding') if isinstance(validated_intent, dict) else None,
+            # Validation metadata for higher-level orchestration
+            'is_valid': True,
+            'validation': None,
             'metadata': {
                 'original_query': original_query,
                 'processed_query': processed_query,
@@ -315,8 +338,113 @@ class IntentAgentOrchestrator:
                 'version': '1.0.0'
             }
         }
-        
+
+        # If no generated_sql was returned by the intent mapping step, attempt a safe
+        # fallback using entity-based SQL generation or workspace catalog
+        if not response.get('generated_sql'):
+            try:
+                # Build SQL from entities if we have them
+                generated_sql = self._generate_sql_from_intent(validated_intent, original_query)
+                if generated_sql:
+                    response['generated_sql'] = generated_sql
+                    self.logger.info(f"Generated SQL from intent entities: {generated_sql}")
+                else:
+                    # Fall back to workspace sample_sql
+                    response['generated_sql'] = self._get_workspace_sample_sql(validated_intent)
+            except Exception as e:
+                self.logger.warning(f"SQL generation fallback failed: {e}, will use workspace sample_sql")
+                response['generated_sql'] = self._get_workspace_sample_sql(validated_intent)
+
         return response
+    
+    def _generate_sql_from_intent(self, validated_intent: Dict[str, Any], original_query: str) -> Optional[str]:
+        """Generate basic SQL from intent entities and workspace."""
+        try:
+            if not isinstance(validated_intent, dict):
+                return None
+            
+            intent_type = validated_intent.get('intent_type', 'read')
+            workspaces = validated_intent.get('workspaces', [])
+            entities = validated_intent.get('entities', {})
+            
+            if not workspaces or intent_type not in ['read', 'summarize', 'compare', 'analyze']:
+                return None
+            
+            workspace = workspaces[0] if isinstance(workspaces, list) else workspaces
+            
+            # Map workspace to table name
+            table_map = {
+                'sales': 'sales_transactions',
+                'support': 'support_tickets',
+                'marketing': 'campaigns',
+                'hr': 'employees',
+                'finance': 'expenses',
+                'operations': 'inventory'
+            }
+            
+            table_name = table_map.get(workspace, f"{workspace}_data")
+            
+            # Build WHERE clause from entities
+            where_clauses = []
+            
+            # Add date filters
+            if entities.get('dates') and isinstance(entities['dates'], list):
+                for date_entity in entities['dates'][:1]:  # Use first date entity
+                    date_str = str(date_entity).lower()
+                    # Try to extract month/year
+                    if 'april' in date_str or '04' in date_str or '4' in date_str:
+                        where_clauses.append("MONTH(date) = 4")
+                    if '2025' in date_str:
+                        where_clauses.append("YEAR(date) = 2025")
+                    elif '2024' in date_str:
+                        where_clauses.append("YEAR(date) = 2024")
+            
+            # Add location filters
+            if entities.get('locations') and isinstance(entities['locations'], list):
+                for location in entities['locations'][:1]:
+                    where_clauses.append(f"location LIKE '%{location}%'")
+            
+            # Build the SQL query
+            if intent_type == 'summarize':
+                sql = f"SELECT COUNT(*) as total_records FROM {table_name}"
+            else:
+                sql = f"SELECT * FROM {table_name}"
+            
+            if where_clauses:
+                sql += " WHERE " + " AND ".join(where_clauses)
+            
+            sql += " LIMIT 100;"
+            
+            return sql
+            
+        except Exception as e:
+            self.logger.debug(f"SQL generation from intent failed: {e}")
+            return None
+    
+    def _get_workspace_sample_sql(self, validated_intent: Dict[str, Any]) -> Optional[str]:
+        """Get sample SQL from workspace catalog."""
+        try:
+            ws_list = []
+            if isinstance(validated_intent, dict) and validated_intent.get('workspaces'):
+                ws_list = validated_intent.get('workspaces')
+
+            picked_sql = None
+            if ws_list and isinstance(ws_list, list):
+                # Take first workspace id
+                ws_id = ws_list[0]
+                # Find in classifier catalog
+                for ws in self.classifier.workspace_catalog:
+                    if ws.get('id') == ws_id or ws.get('id') == str(ws_id):
+                        # Prefer explicit sample_sql
+                        picked_sql = ws.get('sample_sql')
+                        if not picked_sql and ws.get('tables'):
+                            picked_sql = f"SELECT * FROM {ws['tables'][0]} LIMIT 100;"
+                        break
+
+            return picked_sql
+        except Exception:
+            return None
+
     
     def _create_context_error_response(self, 
                                       validation_result: Dict[str, Any],
@@ -324,7 +452,7 @@ class IntentAgentOrchestrator:
                                       start_time: datetime) -> Dict[str, Any]:
         """Create error response for context validation failures."""
         processing_time = (datetime.now() - start_time).total_seconds()
-        
+        # Provide consistent top-level fields so the caller can inspect validation status
         return {
             'intent_analysis': {
                 'intent_type': 'read',
@@ -339,6 +467,10 @@ class IntentAgentOrchestrator:
                 'time_sensitivity': 'historical',
                 'validation_issues': validation_result.get('issues', [])
             },
+            'generated_sql': None,
+            'query_embedding': None,
+            'is_valid': False,
+            'validation': validation_result,
             'metadata': {
                 'error': True,
                 'error_type': 'context_validation_failed',
@@ -375,6 +507,10 @@ class IntentAgentOrchestrator:
                 'query_type': 'simple',
                 'time_sensitivity': 'historical'
             },
+            'generated_sql': None,
+            'query_embedding': None,
+            'is_valid': False,
+            'validation': {'error': error_message},
             'metadata': {
                 'error': True,
                 'error_message': error_message,
