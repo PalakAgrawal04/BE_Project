@@ -148,6 +148,11 @@ class EntityExtractor:
             if aggregation_info:
                 entities["custom"]["aggregation"] = aggregation_info
             
+            # Extract numeric comparisons (amount > 5000, etc.)
+            numeric_comparisons = self._extract_numeric_comparisons(text)
+            if numeric_comparisons:
+                entities["custom"]["numeric_comparisons"] = numeric_comparisons
+            
             # Normalize and deduplicate entities
             entities = self._normalize_entities(entities)
             
@@ -494,12 +499,40 @@ class EntityExtractor:
             match = re.search(pattern, text_lower)
             if match:
                 date_text = match.group(1).strip()
-                # Try to parse the date
+                
+                # Check if it's just a year (e.g., "after 2023")
+                year_match = re.search(r'\b(19|20)\d{2}\b', date_text)
+                if year_match:
+                    year = int(year_match.group())
+                    # For "after 2023", use YEAR(date) > 2023
+                    # For "before 2023", use YEAR(date) < 2023
+                    result["comparison"] = operator
+                    result["compare_year"] = year
+                    result["compare_type"] = "year"
+                    break
+                
+                # Check if it's a month name (e.g., "before January")
+                month_match = None
+                for month_name in month_map.keys():
+                    if month_name in date_text.lower():
+                        month_match = month_map[month_name]
+                        break
+                
+                if month_match:
+                    # For "after January", use MONTH(date) > 1
+                    # For "before January", use MONTH(date) < 1
+                    result["comparison"] = operator
+                    result["compare_month"] = month_match
+                    result["compare_type"] = "month"
+                    break
+                
+                # Try to parse as full date
                 try:
                     parsed_date = dateparser.parse(date_text)
                     if parsed_date:
                         result["comparison"] = operator
                         result["compare_date"] = parsed_date.strftime("%Y-%m-%d")
+                        result["compare_type"] = "date"
                         break  # Use first match
                 except:
                     pass
@@ -577,6 +610,201 @@ class EntityExtractor:
                 }
         
         return None
+    
+    def _extract_numeric_comparisons(self, text: str) -> List[Dict[str, Any]]:
+        """
+        Extract numeric comparisons from text.
+        
+        Examples:
+        - "amount > 50000"
+        - "amount is greater than 5000"
+        - "sales where amount > 1000"
+        - "amount between 1000 and 5000"
+        
+        Returns:
+            List of comparison dicts with column, operator, value
+        """
+        comparisons = []
+        text_lower = text.lower()
+        
+        # Map English phrases to operators
+        operator_map = {
+            'greater than': '>', 'more than': '>', 'above': '>', 'exceeding': '>', 'over': '>',
+            'less than': '<', 'below': '<', 'under': '<', 'beneath': '<',
+            'greater than or equal': '>=', 'at least': '>=', 'minimum': '>=',
+            'less than or equal': '<=', 'at most': '<=', 'maximum': '<=',
+            'equal to': '=', 'equals': '=', 'is': '=', 'equal': '=',
+            'not equal': '!=', 'not equals': '!=', 'different from': '!='
+        }
+        
+        # Common column names to look for
+        column_keywords = {
+            'amount': ['amount', 'price', 'cost', 'value', 'total', 'revenue', 'sales amount'],
+            'quantity': ['quantity', 'qty', 'count', 'number'],
+            'date': ['date', 'time', 'when']
+        }
+        
+        # Pattern 1: Direct SQL operators (amount > 50000, sales where amount > 50000)
+        # More flexible pattern that handles optional words between column and operator
+        direct_op_pattern = r'\b(\w+)(?:\s+\w+)*\s*([><=!]+)\s*(\d+(?:\.\d+)?)\b'
+        for match in re.finditer(direct_op_pattern, text_lower):
+            column = match.group(1)
+            operator = match.group(2)
+            value = match.group(3)
+            
+            # Skip if it looks like a date comparison (has month/year keywords nearby)
+            match_start = match.start()
+            match_end = match.end()
+            context = text_lower[max(0, match_start-10):min(len(text_lower), match_end+10)]
+            if any(word in context for word in ['year', 'month', 'date', 'january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december']):
+                continue
+            
+            # Normalize operator
+            if '>=' in operator:
+                operator = '>='
+            elif '<=' in operator:
+                operator = '<='
+            elif '!=' in operator or '<>' in operator:
+                operator = '!='
+            elif '=' in operator or '==' in operator:
+                operator = '='
+            elif '>' in operator:
+                operator = '>'
+            elif '<' in operator:
+                operator = '<'
+            
+            # Determine column name
+            col_name = self._determine_column_name(column, text_lower)
+            
+            comparisons.append({
+                'column': col_name,
+                'operator': operator,
+                'value': float(value) if '.' in value else int(value)
+            })
+        
+        # Pattern 2: English phrases (amount is greater than 5000, sales amount less than 3000)
+        for phrase, op in operator_map.items():
+            # Pattern: column + phrase + number (e.g., "amount is greater than 5000")
+            pattern = rf'\b(\w+)\s+(?:is\s+)?{re.escape(phrase)}\s+(\d+(?:\.\d+)?)\b'
+            for match in re.finditer(pattern, text_lower):
+                column = match.group(1)
+                value = match.group(2)
+                
+                col_name = self._determine_column_name(column, text_lower)
+                
+                comparisons.append({
+                    'column': col_name,
+                    'operator': op,
+                    'value': float(value) if '.' in value else int(value)
+                })
+            
+            # Pattern: phrase + number (without explicit column, e.g., "greater than 5000")
+            pattern = rf'\b{re.escape(phrase)}\s+(\d+(?:\.\d+)?)\b'
+            for match in re.finditer(pattern, text_lower):
+                value = match.group(1)
+                # Try to infer column from context
+                col_name = self._determine_column_name(None, text_lower)
+                
+                comparisons.append({
+                    'column': col_name,
+                    'operator': op,
+                    'value': float(value) if '.' in value else int(value)
+                })
+            
+            # Pattern: "sales amount less than 3000" (two words before phrase)
+            pattern = rf'\b(\w+\s+\w+)\s+{re.escape(phrase)}\s+(\d+(?:\.\d+)?)\b'
+            for match in re.finditer(pattern, text_lower):
+                column_phrase = match.group(1)
+                value = match.group(2)
+                
+                # Extract the relevant word (usually the second one: "sales amount" -> "amount")
+                words = column_phrase.split()
+                column = words[-1] if len(words) > 1 else words[0]
+                
+                col_name = self._determine_column_name(column, text_lower)
+                
+                comparisons.append({
+                    'column': col_name,
+                    'operator': op,
+                    'value': float(value) if '.' in value else int(value)
+                })
+        
+        # Pattern 3: "where amount > 50000" style
+        where_pattern = r'\bwhere\s+(\w+)\s*([><=!]+)\s*(\d+(?:\.\d+)?)\b'
+        for match in re.finditer(where_pattern, text_lower):
+            column = match.group(1)
+            operator = match.group(2)
+            value = match.group(3)
+            
+            # Normalize operator
+            if '>=' in operator:
+                operator = '>='
+            elif '<=' in operator:
+                operator = '<='
+            elif '!=' in operator or '<>' in operator:
+                operator = '!='
+            elif '=' in operator:
+                operator = '='
+            elif '>' in operator:
+                operator = '>'
+            elif '<' in operator:
+                operator = '<'
+            
+            col_name = self._determine_column_name(column, text_lower)
+            
+            comparisons.append({
+                'column': col_name,
+                'operator': operator,
+                'value': float(value) if '.' in value else int(value)
+            })
+        
+        # Pattern 4: Numeric ranges (between 1000 and 5000)
+        range_pattern = r'\b(\w+)?\s*between\s+(\d+(?:\.\d+)?)\s+and\s+(\d+(?:\.\d+)?)\b'
+        for match in re.finditer(range_pattern, text_lower):
+            column = match.group(1) if match.group(1) else None
+            value1 = match.group(2)
+            value2 = match.group(3)
+            
+            col_name = self._determine_column_name(column, text_lower)
+            val1 = float(value1) if '.' in value1 else int(value1)
+            val2 = float(value2) if '.' in value2 else int(value2)
+            
+            comparisons.append({
+                'column': col_name,
+                'operator': 'BETWEEN',
+                'value': min(val1, val2),
+                'value2': max(val1, val2)
+            })
+        
+        return comparisons
+    
+    def _determine_column_name(self, column: Optional[str], text: str) -> str:
+        """Determine the appropriate column name from context."""
+        text_lower = text.lower()
+        
+        if column:
+            column_lower = column.lower()
+            # Map common variations
+            if column_lower in ['amount', 'price', 'cost', 'value', 'total', 'revenue']:
+                return 'amount'
+            elif column_lower in ['quantity', 'qty', 'count', 'number']:
+                return 'quantity'
+            elif column_lower in ['date', 'time', 'when']:
+                return 'date'
+            elif 'sales' in column_lower or 'sale' in column_lower:
+                return 'amount'
+            elif 'order' in column_lower:
+                return 'total_amount'
+        
+        # Infer from context
+        if 'sales' in text_lower or 'revenue' in text_lower or 'amount' in text_lower:
+            return 'amount'
+        elif 'order' in text_lower:
+            return 'total_amount'
+        elif 'quantity' in text_lower or 'qty' in text_lower:
+            return 'quantity'
+        else:
+            return 'amount'  # Default
 
 
 # Global instance for convenience

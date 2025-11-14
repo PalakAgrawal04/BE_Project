@@ -340,11 +340,13 @@ class IntentAgentOrchestrator:
             }
         }
 
-        # If no generated_sql was returned by the intent mapping step, attempt a safe
-        # fallback using entity-based SQL generation or workspace catalog
-        if not response.get('generated_sql'):
+        # Check if we need to generate or enhance SQL
+        existing_sql = response.get('generated_sql')
+        
+        # If no SQL was generated, or if SQL was generated but has no WHERE clause and we have conditions
+        if not existing_sql:
+            # Generate SQL from entities
             try:
-                # Build SQL from entities if we have them
                 generated_sql = self._generate_sql_from_intent(validated_intent, original_query)
                 if generated_sql:
                     response['generated_sql'] = generated_sql
@@ -355,6 +357,33 @@ class IntentAgentOrchestrator:
             except Exception as e:
                 self.logger.warning(f"SQL generation fallback failed: {e}, will use workspace sample_sql")
                 response['generated_sql'] = self._get_workspace_sample_sql(validated_intent)
+        elif existing_sql and isinstance(existing_sql, str):
+            # Check if the generated SQL has conditions - if not, try to enhance it
+            sql_upper = existing_sql.upper()
+            has_where = 'WHERE' in sql_upper
+            
+            # Check if we have conditions that should be added
+            entities = validated_intent.get('entities', {}) if isinstance(validated_intent, dict) else {}
+            custom = entities.get('custom', {})
+            has_conditions = (
+                custom.get('numeric_comparisons') or
+                custom.get('comparison') or
+                custom.get('quarter') or
+                custom.get('date_range') or
+                (entities.get('dates') and entities['dates']) or
+                (entities.get('locations') and entities['locations']) or
+                (entities.get('quantities') and entities['quantities'])
+            )
+            
+            # If SQL has no WHERE clause but we have conditions, regenerate with conditions
+            if not has_where and has_conditions:
+                try:
+                    enhanced_sql = self._generate_sql_from_intent(validated_intent, original_query)
+                    if enhanced_sql and 'WHERE' in enhanced_sql.upper():
+                        response['generated_sql'] = enhanced_sql
+                        self.logger.info(f"Enhanced SQL with conditions: {enhanced_sql}")
+                except Exception as e:
+                    self.logger.warning(f"SQL enhancement failed: {e}")
 
         return response
     
@@ -391,14 +420,37 @@ class IntentAgentOrchestrator:
             # Check for advanced date patterns first (they take priority)
             custom = entities.get('custom', {})
             
-            # 1. Handle date comparisons (after/before)
-            if custom.get('comparison') and custom.get('compare_date'):
-                operator = custom['comparison']
-                date_str = custom['compare_date']
-                where_clauses.append(f"date {operator} '{date_str}'")
+            # 1. Handle numeric comparisons (amount > 5000, etc.) - can combine with other conditions
+            if custom.get('numeric_comparisons'):
+                for comp in custom['numeric_comparisons']:
+                    col = comp.get('column', 'amount')
+                    op = comp.get('operator', '>')
+                    val = comp.get('value')
+                    
+                    if op == 'BETWEEN':
+                        val2 = comp.get('value2')
+                        if val and val2:
+                            where_clauses.append(f"{col} BETWEEN {val} AND {val2}")
+                    elif val is not None:
+                        where_clauses.append(f"{col} {op} {val}")
             
-            # 2. Handle quarters (Q1, Q2, Q3, Q4)
-            elif custom.get('quarter'):
+            # 2. Handle date comparisons (after/before) - can combine with numeric comparisons
+            if custom.get('comparison'):
+                operator = custom['comparison']
+                compare_type = custom.get('compare_type', 'date')
+                
+                if compare_type == 'year' and custom.get('compare_year'):
+                    year = custom['compare_year']
+                    where_clauses.append(f"YEAR(date) {operator} {year}")
+                elif compare_type == 'month' and custom.get('compare_month'):
+                    month = custom['compare_month']
+                    where_clauses.append(f"MONTH(date) {operator} {month}")
+                elif compare_type == 'date' and custom.get('compare_date'):
+                    date_str = custom['compare_date']
+                    where_clauses.append(f"date {operator} '{date_str}'")
+            
+            # 3. Handle quarters (Q1, Q2, Q3, Q4) - only if no date comparison
+            if custom.get('quarter') and not custom.get('comparison'):
                 quarter_info = custom['quarter']
                 months = quarter_info.get('months', [])
                 year = quarter_info.get('year')
@@ -409,8 +461,8 @@ class IntentAgentOrchestrator:
                 if year:
                     where_clauses.append(f"YEAR(date) = {year}")
             
-            # 3. Handle month ranges (between X and Y)
-            elif custom.get('date_range'):
+            # 4. Handle month ranges (between X and Y) - only if no date comparison or quarter
+            if custom.get('date_range') and not custom.get('comparison') and not custom.get('quarter'):
                 date_range = custom['date_range']
                 start_month = date_range.get('start_month')
                 end_month = date_range.get('end_month')
@@ -418,8 +470,8 @@ class IntentAgentOrchestrator:
                 if start_month and end_month:
                     where_clauses.append(f"MONTH(date) BETWEEN {start_month} AND {end_month}")
             
-            # 4. Handle regular date filters (only if no advanced patterns)
-            else:
+            # 5. Handle regular date filters (only if no advanced date patterns)
+            if not custom.get('comparison') and not custom.get('quarter') and not custom.get('date_range'):
                 # Track which conditions we've already added to prevent duplicates
                 month_condition_added = False
                 year_condition_added = False
@@ -488,8 +540,8 @@ class IntentAgentOrchestrator:
                 if location_clauses:
                     where_clauses.append("(" + " OR ".join(location_clauses) + ")")
             
-            # Add quantity/numeric filters
-            if entities.get('quantities') and isinstance(entities['quantities'], list):
+            # Add quantity/numeric filters (only if no numeric comparisons were extracted)
+            if not custom.get('numeric_comparisons') and entities.get('quantities') and isinstance(entities['quantities'], list):
                 query_lower = original_query.lower()
                 for quantity in entities['quantities']:
                     try:
@@ -502,8 +554,8 @@ class IntentAgentOrchestrator:
                                 where_clauses.append(f"amount > {num_value}")
                             elif 'below' in query_lower or 'less than' in query_lower or '<' in query_lower:
                                 where_clauses.append(f"amount < {num_value}")
-                            elif 'between' in query_lower:
-                                # Try to find second number
+                            elif 'between' in query_lower and 'month' not in query_lower and 'date' not in query_lower:
+                                # Try to find second number (but not for date ranges)
                                 all_nums = re.findall(r'\d+', original_query)
                                 if len(all_nums) >= 2:
                                     num1, num2 = int(all_nums[0]), int(all_nums[1])
