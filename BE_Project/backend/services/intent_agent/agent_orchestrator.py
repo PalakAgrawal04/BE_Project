@@ -9,6 +9,7 @@ classification, LLM mapping, and schema validation.
 import os
 import json
 import logging
+import re
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 
@@ -387,33 +388,178 @@ class IntentAgentOrchestrator:
             # Build WHERE clause from entities
             where_clauses = []
             
-            # Add date filters
-            if entities.get('dates') and isinstance(entities['dates'], list):
-                for date_entity in entities['dates'][:1]:  # Use first date entity
-                    date_str = str(date_entity).lower()
-                    # Try to extract month/year
-                    if 'april' in date_str or '04' in date_str or '4' in date_str:
-                        where_clauses.append("MONTH(date) = 4")
-                    if '2025' in date_str:
-                        where_clauses.append("YEAR(date) = 2025")
-                    elif '2024' in date_str:
-                        where_clauses.append("YEAR(date) = 2024")
+            # Check for advanced date patterns first (they take priority)
+            custom = entities.get('custom', {})
+            
+            # 1. Handle date comparisons (after/before)
+            if custom.get('comparison') and custom.get('compare_date'):
+                operator = custom['comparison']
+                date_str = custom['compare_date']
+                where_clauses.append(f"date {operator} '{date_str}'")
+            
+            # 2. Handle quarters (Q1, Q2, Q3, Q4)
+            elif custom.get('quarter'):
+                quarter_info = custom['quarter']
+                months = quarter_info.get('months', [])
+                year = quarter_info.get('year')
+                
+                if months:
+                    months_str = ','.join(map(str, months))
+                    where_clauses.append(f"MONTH(date) IN ({months_str})")
+                if year:
+                    where_clauses.append(f"YEAR(date) = {year}")
+            
+            # 3. Handle month ranges (between X and Y)
+            elif custom.get('date_range'):
+                date_range = custom['date_range']
+                start_month = date_range.get('start_month')
+                end_month = date_range.get('end_month')
+                
+                if start_month and end_month:
+                    where_clauses.append(f"MONTH(date) BETWEEN {start_month} AND {end_month}")
+            
+            # 4. Handle regular date filters (only if no advanced patterns)
+            else:
+                # Track which conditions we've already added to prevent duplicates
+                month_condition_added = False
+                year_condition_added = False
+                
+                if entities.get('dates') and isinstance(entities['dates'], list):
+                    for date_entity in entities['dates']:
+                        date_str = str(date_entity).lower().strip()
+                        # Month names mapping
+                        month_map = {
+                            'january': 1, 'jan': 1,
+                            'february': 2, 'feb': 2,
+                            'march': 3, 'mar': 3,
+                            'april': 4, 'apr': 4,
+                            'may': 5,
+                            'june': 6, 'jun': 6,
+                            'july': 7, 'jul': 7,
+                            'august': 8, 'aug': 8,
+                            'september': 9, 'sep': 9, 'sept': 9,
+                            'october': 10, 'oct': 10,
+                            'november': 11, 'nov': 11,
+                            'december': 12, 'dec': 12
+                        }
+                        
+                        # Check if it's a month name (exact match or starts with month)
+                        month_found = False
+                        month_num = None
+                        for month_name, num in month_map.items():
+                            # Check for exact month match or month at word boundary
+                            if date_str == month_name or date_str.startswith(month_name + ' '):
+                                month_num = num
+                                month_found = True
+                                break
+                            # Also check if month name appears in the string
+                            elif month_name in date_str and not month_found:
+                                month_num = num
+                                month_found = True
+                                break  # Break after first match to prevent duplicates
+                        
+                        # Check for years in the date string
+                        year_match = re.search(r'\b(19|20)\d{2}\b', date_str)
+                        has_year = year_match is not None
+                        
+                        # Add month filter if month found and not already added
+                        if month_found and month_num and not month_condition_added:
+                            where_clauses.append(f"MONTH(date) = {month_num}")
+                            month_condition_added = True
+                        
+                        # Only add year filter if year is explicitly mentioned and not already added
+                        if has_year and year_match and not year_condition_added:
+                            year = year_match.group()
+                            where_clauses.append(f"YEAR(date) = {year}")
+                            year_condition_added = True
+                        elif not month_found and year_match and not year_condition_added:
+                            # If no month found but has year, just add year
+                            year = year_match.group()
+                            where_clauses.append(f"YEAR(date) = {year}")
+                            year_condition_added = True
             
             # Add location filters
             if entities.get('locations') and isinstance(entities['locations'], list):
-                for location in entities['locations'][:1]:
-                    where_clauses.append(f"location LIKE '%{location}%'")
+                location_clauses = []
+                for location in entities['locations']:
+                    location_str = str(location).strip()
+                    # Try multiple column names for location
+                    location_clauses.append(f"(city LIKE '%{location_str}%' OR location LIKE '%{location_str}%' OR region LIKE '%{location_str}%')")
+                if location_clauses:
+                    where_clauses.append("(" + " OR ".join(location_clauses) + ")")
+            
+            # Add quantity/numeric filters
+            if entities.get('quantities') and isinstance(entities['quantities'], list):
+                query_lower = original_query.lower()
+                for quantity in entities['quantities']:
+                    try:
+                        # Try to extract numeric value
+                        num_match = re.search(r'\d+', str(quantity))
+                        if num_match:
+                            num_value = int(num_match.group())
+                            # Check for comparison operators in query
+                            if 'above' in query_lower or 'more than' in query_lower or 'greater than' in query_lower or '>' in query_lower:
+                                where_clauses.append(f"amount > {num_value}")
+                            elif 'below' in query_lower or 'less than' in query_lower or '<' in query_lower:
+                                where_clauses.append(f"amount < {num_value}")
+                            elif 'between' in query_lower:
+                                # Try to find second number
+                                all_nums = re.findall(r'\d+', original_query)
+                                if len(all_nums) >= 2:
+                                    num1, num2 = int(all_nums[0]), int(all_nums[1])
+                                    where_clauses.append(f"amount BETWEEN {min(num1, num2)} AND {max(num1, num2)}")
+                            else:
+                                where_clauses.append(f"amount = {num_value}")
+                    except (ValueError, AttributeError):
+                        pass
+            
+            # Deduplicate WHERE clauses to prevent duplicate conditions
+            # Use dict.fromkeys() to preserve order while removing duplicates
+            where_clauses = list(dict.fromkeys(where_clauses))
             
             # Build the SQL query
-            if intent_type == 'summarize':
+            query_lower_for_intent = original_query.lower()
+            
+            # Check for aggregation in custom entities
+            aggregation_info = custom.get('aggregation')
+            
+            if aggregation_info:
+                # Use aggregation from entity extraction
+                agg_type = aggregation_info.get('type', 'SUM')
+                agg_column = aggregation_info.get('column', 'amount')
+                
+                # Determine alias name based on context
+                if agg_type == 'SUM':
+                    alias = "total_sales" if 'sales' in query_lower_for_intent else f"total_{agg_column}"
+                    sql = f"SELECT SUM({agg_column}) AS {alias} FROM {table_name}"
+                elif agg_type == 'COUNT':
+                    sql = f"SELECT COUNT(*) AS total_count FROM {table_name}"
+                elif agg_type == 'AVG':
+                    sql = f"SELECT AVG({agg_column}) AS avg_{agg_column} FROM {table_name}"
+                elif agg_type == 'MAX':
+                    sql = f"SELECT MAX({agg_column}) AS max_{agg_column} FROM {table_name}"
+                elif agg_type == 'MIN':
+                    sql = f"SELECT MIN({agg_column}) AS min_{agg_column} FROM {table_name}"
+                else:
+                    alias = "total_sales" if 'sales' in query_lower_for_intent else f"total_{agg_column}"
+                    sql = f"SELECT SUM({agg_column}) AS {alias} FROM {table_name}"
+            elif intent_type == 'summarize':
                 sql = f"SELECT COUNT(*) as total_records FROM {table_name}"
+            elif intent_type == 'analyze' and 'average' in query_lower_for_intent:
+                sql = f"SELECT AVG(amount) as avg_amount FROM {table_name}"
+            elif intent_type == 'analyze' and ('total' in query_lower_for_intent or 'sum' in query_lower_for_intent):
+                sql = f"SELECT SUM(amount) as total FROM {table_name}"
             else:
                 sql = f"SELECT * FROM {table_name}"
             
             if where_clauses:
                 sql += " WHERE " + " AND ".join(where_clauses)
             
-            sql += " LIMIT 100;"
+            # Don't add LIMIT for aggregations (they return single row)
+            if not aggregation_info:
+                sql += " LIMIT 100;"
+            else:
+                sql += ";"
             
             return sql
             

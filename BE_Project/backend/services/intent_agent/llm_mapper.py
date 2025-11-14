@@ -8,7 +8,7 @@ from text and retrieved context, providing intelligent intent mapping.
 import os
 import json
 import logging
-from typing import Dict, List, Any, Optional, Optional
+from typing import Dict, List, Any, Optional
 from pathlib import Path
 
 try:
@@ -212,8 +212,8 @@ class LLMMapper:
             }
             table_name = table_map.get(workspace, f"{workspace}_data")
             
-            # Build a focused SQL generation prompt
-            sql_prompt = f"""Given this user query and extracted intent, generate a safe SQL SELECT statement.
+            # Build a comprehensive SQL generation prompt with detailed examples
+            sql_prompt = f"""You are a SQL query generator. Given a user query and extracted entities, generate a safe, read-only SQL SELECT statement.
 
 User Query: {user_text}
 Intent Type: {intent_type}
@@ -222,33 +222,77 @@ Table to query: {table_name}
 Extracted Entities:
   - Dates: {entities.get('dates', [])}
   - Locations: {entities.get('locations', [])}
+  - Quantities: {entities.get('quantities', [])}
   - Products: {entities.get('products', [])}
 
-IMPORTANT: Return ONLY the SQL statement, nothing else. No JSON, no explanation.
-Rules:
-- Use SELECT only (read-only)
-- Add WHERE clauses for any extracted entities (dates, locations, products)
-- Always add LIMIT 100
-- Use table name: {table_name}
-- For dates like "April 2025", use: WHERE MONTH(date) = 4 AND YEAR(date) = 2025
-- For locations, use: WHERE location LIKE '%location%'
+CRITICAL RULES:
+1. Return ONLY the SQL statement, nothing else. No JSON, no explanation, no markdown.
+2. Use SELECT only (read-only). Never use INSERT/UPDATE/DELETE/DROP/ALTER/TRUNCATE.
+3. Always add LIMIT 100 at the end.
+4. Use table name: {table_name}
 
-Return ONLY the SQL query:"""
+SQL PATTERN EXAMPLES:
+
+Date Filters:
+- "April" (month only, no year) → WHERE MONTH(date) = 4 (DO NOT add YEAR filter)
+- "April 2025" (month with year) → WHERE MONTH(date) = 4 AND YEAR(date) = 2025
+- "between January and March" → WHERE MONTH(date) BETWEEN 1 AND 3 (only add YEAR if user specified it)
+- "2024" → WHERE YEAR(date) = 2024
+- "last month" → WHERE MONTH(date) = MONTH(CURRENT_DATE - INTERVAL 1 MONTH) AND YEAR(date) = YEAR(CURRENT_DATE - INTERVAL 1 MONTH)
+- CRITICAL: If date entity is just a month name (like "April", "May"), use MONTH(date) = X WITHOUT YEAR filter
+
+Numeric/Amount Filters:
+- "above 5000" or "more than 5000" → WHERE amount > 5000
+- "below 1000" or "less than 1000" → WHERE amount < 1000
+- "between 1000 and 5000" → WHERE amount BETWEEN 1000 AND 5000
+- Common column names: amount, price, revenue, total_amount, value, cost
+
+Location Filters:
+- "Mumbai" or "from Mumbai" → WHERE city LIKE '%Mumbai%' OR location LIKE '%Mumbai%'
+- "from California" → WHERE region LIKE '%California%' OR state = 'California'
+
+Multiple Conditions:
+- Combine with AND: WHERE location LIKE '%Mumbai%' AND MONTH(date) = 4 AND amount > 5000
+
+Column Selection:
+- Use SELECT * when no specific columns mentioned
+- For orders: use total_amount, order_amount, or amount
+- For sales: use amount, revenue, or total
+
+Aggregations (for summarize/analyze intents):
+- "total" or "sum" → SELECT SUM(amount) as total
+- "average" or "avg" → SELECT AVG(amount) as avg_amount
+- "count" → SELECT COUNT(*) as count
+- Use GROUP BY when grouping is needed
+
+Return ONLY the SQL query (no explanations, no code blocks, just the SQL):"""
             
             response = self._generate_response(sql_prompt)
             
-            # Extract SQL from response (it should be mostly clean)
+            # Extract SQL from response
             sql = response.strip()
             
             # Clean up if wrapped in code blocks
             if '```' in sql:
-                sql = sql.split('```')[1].replace('sql', '').strip()
+                # Extract content between code blocks
+                parts = sql.split('```')
+                for part in parts:
+                    cleaned = part.replace('sql', '').replace('SQL', '').strip()
+                    if cleaned.upper().startswith('SELECT'):
+                        sql = cleaned
+                        break
+            
+            # Remove any leading/trailing quotes or whitespace
+            sql = sql.strip().strip('"').strip("'")
             
             # Validate it looks like a SELECT
             if sql.upper().startswith('SELECT'):
+                # Ensure it ends with semicolon or LIMIT
+                if not sql.rstrip().endswith(';'):
+                    sql = sql.rstrip() + ';'
                 return sql
             else:
-                self.logger.warning(f"Follow-up SQL generation returned non-SELECT: {sql}")
+                self.logger.warning(f"Follow-up SQL generation returned non-SELECT: {sql[:100]}")
                 return None
                 
         except Exception as e:

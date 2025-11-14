@@ -17,7 +17,8 @@
       "confidence": 0.95,
       "rationale": "Clear request for sales data with specific location and time period. Single intent to retrieve data.",
       "query_type": "simple",
-      "time_sensitivity": "historical"
+      "time_sensitivity": "historical",
+      "generated_sql": "SELECT * FROM sales_transactions WHERE (city LIKE '%Mumbai%' OR location LIKE '%Mumbai%') AND MONTH(date) = MONTH(CURRENT_DATE - INTERVAL 1 MONTH) AND YEAR(date) = YEAR(CURRENT_DATE - INTERVAL 1 MONTH) LIMIT 100;"
     }
   },
   {
@@ -38,7 +39,8 @@
       "confidence": 0.92,
       "rationale": "Explicit comparison request between two time periods for complaint data. Comparative intent is clear.",
       "query_type": "simple",
-      "time_sensitivity": "historical"
+      "time_sensitivity": "historical",
+      "generated_sql": "SELECT YEAR(date) as year, COUNT(*) as total_complaints FROM complaints WHERE YEAR(date) IN (2024, 2025) GROUP BY YEAR(date) LIMIT 100;"
     }
   },
   {
@@ -59,7 +61,8 @@
       "confidence": 0.88,
       "rationale": "Request for analytical metric (average) over specific time period. Analysis intent with aggregation.",
       "query_type": "simple",
-      "time_sensitivity": "historical"
+      "time_sensitivity": "historical",
+      "generated_sql": "SELECT AVG(response_time) as avg_response_time FROM support_tickets WHERE YEAR(date) = 2024 AND QUARTER(date) = 3 LIMIT 100;"
     }
   },
   {
@@ -83,7 +86,8 @@
       "confidence": 0.90,
       "rationale": "Clear update operation to modify customer status based on order condition. Modification intent.",
       "query_type": "simple",
-      "time_sensitivity": "immediate"
+      "time_sensitivity": "immediate",
+      "generated_sql": null
     }
   },
   {
@@ -104,7 +108,8 @@
       "confidence": 0.85,
       "rationale": "Complex query with both ranking (top 10) and comparison elements. Compare intent with multiple entities.",
       "query_type": "complex",
-      "time_sensitivity": "historical"
+      "time_sensitivity": "historical",
+      "generated_sql": "SELECT product_name, MONTH(date) as month, SUM(revenue) as total_revenue FROM sales_transactions WHERE (MONTH(date) = 12 AND YEAR(date) = 2024) OR (MONTH(date) = 11 AND YEAR(date) = 2024) GROUP BY product_name, MONTH(date) ORDER BY total_revenue DESC LIMIT 10;"
     }
   },
   {
@@ -127,7 +132,8 @@
       "confidence": 0.87,
       "rationale": "Explicit prediction request with time period and method specification. Predictive intent.",
       "query_type": "simple",
-      "time_sensitivity": "future"
+      "time_sensitivity": "future",
+      "generated_sql": null
     }
   },
   {
@@ -151,7 +157,96 @@
       "confidence": 0.93,
       "rationale": "Clear summarization request with grouping by department and time period. Aggregation intent.",
       "query_type": "simple",
-      "time_sensitivity": "historical"
+      "time_sensitivity": "historical",
+      "generated_sql": "SELECT department, AVG(performance_rating) as avg_rating, COUNT(*) as employee_count FROM performance_reviews WHERE YEAR(review_date) = YEAR(CURRENT_DATE) GROUP BY department LIMIT 100;"
+    }
+  },
+  {
+    "user_query": "show sales from April",
+    "context": ["sales data", "monthly reports"],
+    "intent": {
+      "intent_type": "read",
+      "workspaces": ["sales"],
+      "entities": {
+        "dates": ["April"],
+        "locations": [],
+        "quantities": [],
+        "products": [],
+        "organizations": [],
+        "people": [],
+        "custom": {}
+      },
+      "confidence": 0.95,
+      "rationale": "User requests sales data for April. Since no year is specified, only filter by month.",
+      "query_type": "simple",
+      "time_sensitivity": "historical",
+      "generated_sql": "SELECT * FROM sales_transactions WHERE MONTH(date) = 4 LIMIT 100;"
+    }
+  },
+  {
+    "user_query": "get orders above 5000",
+    "context": ["order data", "high value orders"],
+    "intent": {
+      "intent_type": "read",
+      "workspaces": ["sales"],
+      "entities": {
+        "dates": [],
+        "locations": [],
+        "quantities": ["5000"],
+        "products": [],
+        "organizations": [],
+        "people": [],
+        "custom": {}
+      },
+      "confidence": 0.92,
+      "rationale": "User requests orders with amount greater than 5000. Numeric filter applied.",
+      "query_type": "simple",
+      "time_sensitivity": "historical",
+      "generated_sql": "SELECT * FROM sales_orders WHERE total_amount > 5000 LIMIT 100;"
+    }
+  },
+  {
+    "user_query": "list customers from Mumbai",
+    "context": ["customer data", "location filter"],
+    "intent": {
+      "intent_type": "read",
+      "workspaces": ["sales"],
+      "entities": {
+        "dates": [],
+        "locations": ["Mumbai"],
+        "quantities": [],
+        "products": [],
+        "organizations": [],
+        "people": [],
+        "custom": {}
+      },
+      "confidence": 0.94,
+      "rationale": "User requests customers from Mumbai. Location filter applied using LIKE for flexibility.",
+      "query_type": "simple",
+      "time_sensitivity": "historical",
+      "generated_sql": "SELECT * FROM customers WHERE city LIKE '%Mumbai%' OR location LIKE '%Mumbai%' LIMIT 100;"
+    }
+  },
+  {
+    "user_query": "show revenue between January and March",
+    "context": ["revenue data", "date range"],
+    "intent": {
+      "intent_type": "read",
+      "workspaces": ["sales"],
+      "entities": {
+        "dates": ["January", "March"],
+        "locations": [],
+        "quantities": [],
+        "products": [],
+        "organizations": [],
+        "people": [],
+        "custom": {}
+      },
+      "confidence": 0.91,
+      "rationale": "User requests revenue data for date range between January and March. Assuming current year if not specified.",
+      "query_type": "simple",
+      "time_sensitivity": "historical",
+      "generated_sql": "SELECT * FROM sales_revenue WHERE MONTH(date) BETWEEN 1 AND 3 AND YEAR(date) = YEAR(CURRENT_DATE) LIMIT 100;"
     }
   }
 ]
